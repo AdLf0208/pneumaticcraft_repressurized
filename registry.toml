@@ -1,0 +1,49 @@
+id = "pneumaticcraft"
+kind = "native-mod"
+name = "pneumaticcraft"
+summary = "A Horizon port of pneumaticcraft."
+description = """
+A port of [pneumaticcraft](TeamPneumatic/pnc-repressurized) for Horizon.
+
+**Implemented so far**
+
+- Flux compressor** (`pneumaticcraft:flux_compressor`): 100,000 FE buffer; spends
+- FE a tick** to make **16 mL of air a tick** at 100 % heat efficiency
+- (`40 × eff/100 × fluxCompressorEfficiency/100`, config default 40 air per 100 FE); a 10,000 mL
+- handler with `PressureTier.TIER_TWO` (danger 20 bar, critical 25); heat exchanger capacity 100,
+- `addHeat(air/20)` a tick, ambient 300 K, `(T − 300)/101` lost a tick — so it settles at
+- ~300.8 K and stays at 100 % efficiency. Every 5 ticks it refreshes its rates. With nothing
+- connected it **leaks** `(int)(pressure × 40) + 20` mL a tick, so a lone compressor never
+- accumulates air (measured: 16 mL after 118 ticks).
+
+**Not yet ported**
+
+- Pressure tubes** (`pressure_tube`, `advanced_pressure_tube`, `reinforced_pressure_tube`,
+- `tube_junction`) and tube modules — the network proper: six-sided connection state, tube
+- volume aggregation, leaks over a network, modules, camouflage. This is the next slice and the
+- block most of the mod stands on.
+- Upgrades** (speed/volume/security/dispenser) and their items.
+- Menus/screens**, the pressure gauge/manometer item, the GUI redstone modes.
+- Overpressure explosion** (`doOverpressureChecks`) — not ported; nothing in the slice reaches
+- bar without the harness, and the harness clamps at the critical 25 bar.
+
+Original copyright and licence notices are kept in this repository. Pinned to
+Horizon 1d63e0a and horizon-mixins 5a64af93. Help with the remaining slices is
+welcome.
+"""
+authors = ["AdLf0208"]
+owners = ["AdLf0208"]
+owner_ids = [107615167]
+license = "GPL-3.0-only"
+source = "https://github.com/AdLf0208/pneumaticcraft"
+icon = "icons/pneumaticcraft.png"
+categories = ["utility"]
+tags = ["port", "horizon"]
+
+[[versions]]
+version = "0.1.0"
+published = "2026-11-10"
+game = "26.3"
+file = "pneumaticcraft.hnmod"
+sha256 = "d786b6a8c7004fa634bd69a5f3989ed98ee0bf68852d50b380f2f0f303cc14de"
+changelog = "First release"

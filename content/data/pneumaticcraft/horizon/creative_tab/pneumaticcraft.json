@@ -1,0 +1,8 @@
+{
+  "icon": "pneumaticcraft:flux_compressor",
+  "items": [
+    "pneumaticcraft:flux_compressor",
+    "pneumaticcraft:pneumatic_dynamo"
+  ],
+  "title": "itemGroup.pneumaticcraft"
+}

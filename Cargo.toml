@@ -1,0 +1,15 @@
+[package]
+# Ported from: PneumaticCraft: Repressurized 8.2.24 (TeamPneumatic/pnc-repressurized,
+# GPL-3.0-only — the jar's `neoforge.mods.toml` says `license="GNU GPLv3"`, not the
+# source map's LGPL), Minecraft Java 1.21.1 NeoForge. Copyleft: complete source and
+# the GPLv3 text travel with this port (LICENSE, COPYING.LESSER).
+name = "horizon-pneumaticcraft"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-3.0-only"
+description = "PneumaticCraft: Repressurized for Horizon — the FE/air conversion pair"
+
+[lib]
+# This exact source is also injected as a same-crate module by horizon-mixins.
+path = "mixins/pneumaticcraft/runtime.rs"

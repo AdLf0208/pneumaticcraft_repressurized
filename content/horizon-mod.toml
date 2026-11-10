@@ -1,0 +1,10 @@
+# Port-owned content mod for the PneumaticCraft 8.2.24 slice: the flux compressor
+# and the pneumatic dynamo, and the carried assets/data for them. The models,
+# textures, blockstates, lang file and loot tables are upstream's own GPLv3
+# assets, read from the exact ATM10 jar (see ../../_shared/carry-work/pneumaticcraft/SOURCE.md).
+id = "pneumaticcraft"
+name = "PneumaticCraft: Repressurized"
+version = "0.1.0"
+api = "0.2"
+side = "both"
+capabilities = ["registries"]
