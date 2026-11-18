@@ -1,0 +1,33 @@
+id = "pneumaticcraft"
+name = "PneumaticCraft: Repressurized"
+version = "0.2.0"
+description = """A port of PneumaticCraft: Repressurized for Horizon, slice 1: the flux compressor turns Forge
+Energy into compressed air and the pneumatic dynamo turns it back. The compressor spends 40 FE a tick
+for 16 mL of air at 100 % heat efficiency into a 10,000 mL tier-two handler, the dynamo needs more than
+15 bar and spends 100 mL a tick for FE, and two such machines facing each other are a valid
+PneumaticCraft pressure connection, so each tick the higher-pressure handler sends the lower-pressure
+one to its volume share. A block that reaches no other handler leaks (pressure * 40) + 20 mL a tick,
+the heat exchanger uses upstream's efficiency formula, and every rate and the block's active state come
+from the mod's own numbers. The pressure tube network, upgrades, menus, the overpressure explosion, the
+other machine families and crafting recipes are not ported yet."""
+authors = ["TeamPneumatic", "AdLf0208"]
+# The original's licence: GPL-3.0-only, read from the jar's `neoforge.mods.toml`
+# (`license="GNU GPLv3"`); the GPLv3 text and the complete corresponding source travel
+# inside the package as LICENSE / COPYING.LESSER.
+# A native mod: Rust in src/, compiled by the launcher against the game build [native]
+# pins, beside data/ and assets/. The id is the resource namespace and the only
+# identity: Cargo's package name and version are not the mod's.
+api = "0.2"
+# The installation side, not the hook's: the machines and their block entities run on
+# the server, and single player's integrated server belongs to the client installation,
+# so "both".
+side = "both"
+# The one shared value every manifest carries ("May add blocks, items, mob effects and
+# entity types"): this package declares the flux compressor and the pneumatic dynamo,
+# their items, their block entities, the creative tab and the two loot tables.
+capabilities = ["registries"]
+
+[native]
+game = "26.3"
+horizon = "0b14f8acfd97fa2c750e42795249dcc981178ca4"
+mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"

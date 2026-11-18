@@ -1,0 +1,30 @@
+{
+  "default_state": {
+    "active": "false",
+    "facing": "north"
+  },
+  "item": true,
+  "properties": {
+    "explosion_resistance": 10.0,
+    "hardness": 3.0,
+    "requires_tool": true,
+    "sounds": "minecraft:iron_block"
+  },
+  "state_properties": {
+    "active": {
+      "type": "boolean"
+    },
+    "facing": {
+      "type": "enum",
+      "values": [
+        "north",
+        "south",
+        "east",
+        "west",
+        "up",
+        "down"
+      ]
+    }
+  },
+  "template": "minecraft:stone"
+}

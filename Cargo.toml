@@ -1,0 +1,26 @@
+[package]
+# Port of PneumaticCraft: Repressurized 8.2.24 (TeamPneumatic/pnc-repressurized,
+# GPL-3.0-only — the jar's `neoforge.mods.toml` says `license="GNU GPLv3"`, not the
+# source map's LGPL), Minecraft Java 1.21.1 NeoForge; the port targets Horizon 26.3
+# at the pin in horizon-mod.toml. Clean-room Rust rewrite from the mod's behaviour
+# (notes.md, FINDINGS.md). Copyleft: complete corresponding source and the GPLv3
+# text travel with this port (LICENSE, COPYING.LESSER).
+#
+# Cargo's name and version are not the mod's identity: horizon-mod.toml is.
+name = "pneumaticcraft"
+version = "0.2.0"
+edition = "2024"
+license = "GPL-3.0-only"
+description = "PneumaticCraft: Repressurized for Horizon — the FE/air conversion pair"
+publish = false
+
+[lib]
+# The one `#[mod_api::horizon_mod] impl Hooks` is the crate root; `runtime` is the
+# pure logic and stays a plain module (no mod_api types in it).
+path = "src/lib.rs"
+
+[dependencies]
+# The pinned SDK's API crate, fetched into .horizon/sdk/ by any `cargo horizon-mod`
+# command (the launcher builds against its own copy of the same build). Any other
+# registry dependency must be pinned with `horizon-launcher native-lock .` first.
+horizon-mod-api = { path = ".horizon/sdk/api/crates/horizon-mod-api" }
