@@ -2,7 +2,10 @@
   "icon": "pneumaticcraft:flux_compressor",
   "items": [
     "pneumaticcraft:flux_compressor",
-    "pneumaticcraft:pneumatic_dynamo"
+    "pneumaticcraft:pneumatic_dynamo",
+    "pneumaticcraft:pressure_tube",
+    "pneumaticcraft:reinforced_pressure_tube",
+    "pneumaticcraft:advanced_pressure_tube"
   ],
   "title": "itemGroup.pneumaticcraft"
 }

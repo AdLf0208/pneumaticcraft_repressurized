@@ -2,8 +2,9 @@
 //!
 //! One flat SDK package (mod API 0.2): the carried blockstates, models, textures, lang, loot
 //! tables and tags are the `assets/` and `data/` here, and the behaviour is the one
-//! `impl Hooks` below. The rules themselves live in [`runtime`], byte-identical to the retired
-//! `.hnmod` bundle's `runtime.rs`; [`support`] is the glue.
+//! `impl Hooks` below. The rules themselves live in [`runtime`] (slice 1, byte-identical to the
+//! retired `.hnmod` bundle's `runtime.rs`) and [`tubes`] (slice 2, the pressure-tube network);
+//! [`support`] is the glue.
 //!
 //! # Where the retired container's hooks went
 //!
@@ -22,10 +23,11 @@
 //! | `perform_command` (8) | [`Mod::run_mod_command`] |
 pub mod runtime;
 pub mod support;
+pub mod tubes;
 
 use mod_api::{
-    self, Flow, Hooks, RegisterCommandsEvent, Registrar, RegistrationContext, RunModCommandEvent,
-    ServerHost,
+    self, Flow, Hooks, HostSide, LevelTickPostEvent, RegisterCommandsEvent, Registrar,
+    RegistrationContext, RunModCommandEvent, ServerHost,
 };
 
 /// The mod keeps no state of its own: everything a machine knows is in its block entity's saved
@@ -55,5 +57,13 @@ impl Hooks for Mod {
         event: &mut RunModCommandEvent<'_>,
     ) -> Flow {
         support::run_command(host, event)
+    }
+
+    /// After a level's block entities have ticked: hand each handler what was queued for it — the
+    /// air its neighbours sent, and the harness's own sets (`level_tick_post`, API 1). A write
+    /// made inside a block entity's tick is overwritten by that tick's write-back, so everything
+    /// the pressure network does to a handler is applied here, once every tick has finished.
+    fn level_tick_post(&self, host: HostSide<'_>, event: &mut LevelTickPostEvent) {
+        support::apply_pending(host, event.level);
     }
 }

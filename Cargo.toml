@@ -8,10 +8,10 @@
 #
 # Cargo's name and version are not the mod's identity: horizon-mod.toml is.
 name = "pneumaticcraft"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "GPL-3.0-only"
-description = "PneumaticCraft: Repressurized for Horizon — the FE/air conversion pair"
+description = "PneumaticCraft: Repressurized for Horizon — the FE/air pair and the pressure tubes"
 publish = false
 
 [lib]

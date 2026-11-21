@@ -1,5 +1,9 @@
 # PneumaticCraft slice 1 — validation evidence
 
+> **Slice 2 (the pressure tubes, 0.2.1) is in [`notes.md`](notes.md) → "Slice 2 — the
+> pressure-tube network"**, with its own red→green logs, ladder and in-game transcript. The file
+> below is slice 1's.
+>
 > **Historical (0.1.0, the retired `.hnmod` container).** This file is the evidence of the
 > `.hnmod` port: the paths it names (`mixins/pneumaticcraft/…`, `content/`, `tools/horizon.py`)
 > no longer exist, and `build-slot.sh`'s staging steps speak the retired tool. The 0.2.0 SDK

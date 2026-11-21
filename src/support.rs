@@ -1,27 +1,30 @@
-//! The slice's glue: the two block entity types and their declarations, the machine tick, the
-//! neighbouring air handler and the `/pneumaticcraft` harness commands.
+//! The package's glue: the block entity types and their declarations, the machine and tube
+//! ticks, the neighbouring air handlers and the `/pneumaticcraft` harness commands.
 //!
-//! Every rule lives in [`crate::runtime`] (the retired bundle's `runtime.rs`, byte-identical);
-//! this file reads the game, calls it and writes the result back. Its tests pin what it
-//! *declares* (the two 100,000 FE buffers), the saved compound's keys and types, the facing rule
-//! that joins two machines, the `active` cadence, and the exact line `/pneumaticcraft info`
-//! prints (the 0.1.0 e2e parses it field by field).
+//! Every rule lives in [`crate::runtime`] (slice 1's FE/air pair, byte-identical to the retired
+//! bundle's file) or [`crate::tubes`] (slice 2's network); this file reads the game, calls them
+//! and writes the result back. Its tests pin what it *declares* (the two 100,000 FE buffers, the
+//! tube block entity type over its three blocks), the saved compound's keys and types, the facing
+//! rule that joins two machines, the `active` cadence, and the exact line `/pneumaticcraft info`
+//! prints (the e2e parses it field by field).
 //!
 //! The retired `.hnmod` bundle read the game through `Game` and wrote a neighbour's compound
 //! directly with `native_with_mod_block_entity`. Here a block entity's saved data is the
-//! checked view the tick is handed (`event.entity.nbt`) for its **own** machine, and a handle
+//! checked view the tick is handed (`event.entity.nbt`) for its **own** block, and a handle
 //! (`host.block_entity(level, pos)` + `merge_data`) for a neighbour's: a ticked block entity is
 //! out of the world for its own tick, so its own payload can only be written through the event.
+use crate::runtime::{
+    AMBIENT_TEMPERATURE, ENERGY_CAPACITY, FluxCompressor, PneumaticDynamo, VOLUME_FLUX_COMPRESSOR,
+    VOLUME_PNEUMATIC_DYNAMO, disperse, heat_efficiency, leak, pressure,
+};
+use crate::tubes::{
+    Handler, Side, Sides, Tube, disperse_to_lower, tube_leak, tube_leaks, visual_sides,
+};
 use mod_api::{
     self, BlockEntityEvent, BlockEntityPart, BlockEntityTickEvent, BlockEntityTickReply,
     BlockEntityTicksEvent, BlockPart, Command, CommandArgumentValue, Compound, Direction, ENERGY,
     Flow, Host, HostBlockStates, HostTransaction, LevelRef, LevelSide, ModEnergyBuffer, Registrar,
     RegistrationContext, RunModCommandEvent, ServerHost, Tag, Text,
-};
-
-use crate::runtime::{
-    AMBIENT_TEMPERATURE, ENERGY_CAPACITY, FluxCompressor, PneumaticDynamo, VOLUME_FLUX_COMPRESSOR,
-    VOLUME_PNEUMATIC_DYNAMO, disperse, heat_efficiency, leak, pressure,
 };
 
 /// The flux compressor block and its item (`ModBlocks.FLUX_COMPRESSOR`).
@@ -33,6 +36,15 @@ pub(crate) const DYNAMO: &str = "pneumaticcraft:pneumatic_dynamo";
 const FLUX_TYPE: &str = "flux_compressor";
 /// The pneumatic dynamo's block entity type.
 const DYNAMO_TYPE: &str = "pneumatic_dynamo";
+/// The three tubes share one block entity type: the volume and the tier come from the block id,
+/// which the type's tick reads at its own position.
+const TUBE_TYPE: &str = "pressure_tube";
+/// The block ids that type covers (`ModBlocks.PRESSURE_TUBE` and its two upgrades).
+const TUBE_BLOCKS: [&str; 3] = [
+    "pressure_tube",
+    "reinforced_pressure_tube",
+    "advanced_pressure_tube",
+];
 
 /// The air handler's saved amount (`AirHandler.Air` upstream).
 const KEY_AIR: &str = "air";
@@ -96,11 +108,125 @@ impl Kind {
     }
 }
 
+use std::sync::Mutex;
+
+/// One write to a handler, held until the level's block entities have ticked.
+///
+/// A block entity's tick is handed the compound it started the tick with and writes it back when
+/// the tick ends, so a write to it made *during* a tick is overwritten by that write-back:
+/// upstream never has the problem because its handlers are live objects. Everything this mod
+/// writes to another handler — a dispersion send, and the harness's `air`/`energy` setters — is
+/// therefore queued here and applied in [`apply_pending`], after the tick pass, as a delta on the
+/// handler's *current* air (which also makes two senders to one handler additive).
+enum Pending {
+    /// Add `air` mL to the handler at `pos` (the sender already took it out of its own).
+    Send {
+        level: LevelRef,
+        pos: [i32; 3],
+        air: i32,
+    },
+    /// Set the handler's air (the harness's `/pneumaticcraft air`, already clamped).
+    SetAir {
+        level: LevelRef,
+        pos: [i32; 3],
+        air: i32,
+    },
+    /// Set the machine's FE buffer (the harness's `/pneumaticcraft energy`, already clamped).
+    SetEnergy {
+        level: LevelRef,
+        pos: [i32; 3],
+        energy: i32,
+    },
+}
+
+static PENDING: Mutex<Vec<Pending>> = Mutex::new(Vec::new());
+
+fn queue(pending: Pending) {
+    if let Ok(mut queue) = PENDING.lock() {
+        queue.push(pending);
+    }
+}
+
+/// Queue `air` mL for the handler at `pos`.
+fn send_air(level: LevelRef, pos: [i32; 3], air: i32) {
+    if air > 0 {
+        queue(Pending::Send { level, pos, air });
+    }
+}
+
+/// `level_tick_post`: apply this level's queued writes, in the order they were made.
+///
+/// Entries for another level stay queued for that level's own post-tick; entries whose level is
+/// no longer open are dropped (their handlers are unreachable, as they are upstream when a level
+/// unloads mid-tick).
+pub(crate) fn apply_pending(side: mod_api::HostSide<'_>, level: LevelRef) {
+    let mod_api::HostSide::Server(host) = side else {
+        return;
+    };
+    let Ok(mut queue) = PENDING.lock() else {
+        return;
+    };
+    let pending = std::mem::take(&mut *queue);
+    let open = host.levels().list_levels();
+    for entry in pending {
+        let at = match &entry {
+            Pending::Send { level, pos, .. }
+            | Pending::SetAir { level, pos, .. }
+            | Pending::SetEnergy { level, pos, .. } => (*level, *pos),
+        };
+        if at.0 != level {
+            if open.contains(&at.0) {
+                queue.push(entry);
+            }
+            continue;
+        }
+        let Some(entity) = host.block_entity(level, at.1) else {
+            continue;
+        };
+        let mut patch = Compound::new();
+        match entry {
+            Pending::Send { air, .. } => {
+                let current = read_int(&entity.data(&*host).unwrap_or_default(), KEY_AIR);
+                write_int(&mut patch, KEY_AIR, current.saturating_add(air));
+            }
+            Pending::SetAir { air, .. } => write_int(&mut patch, KEY_AIR, air),
+            Pending::SetEnergy { energy, .. } => write_int(&mut patch, KEY_ENERGY, energy),
+        }
+        let _ = entity.merge_data(host, patch);
+    }
+}
+
+/// What stands at a position, as a pressure connection sees it: one of slice 1's machines or one
+/// of slice 2's tubes. Both hold air; only the machines hold FE and heat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HandlerKind {
+    Machine(Kind),
+    Tube(Tube),
+}
+
+impl HandlerKind {
+    /// The handler a block id is, or `None` for anything else.
+    fn of(id: &str) -> Option<Self> {
+        Kind::of(id)
+            .map(Self::Machine)
+            .or_else(|| Tube::of(id).map(Self::Tube))
+    }
+
+    /// The air handler's volume (`PneumaticValues.VOLUME_*`).
+    fn volume(self) -> i32 {
+        match self {
+            Self::Machine(kind) => kind.volume(),
+            Self::Tube(tube) => tube.volume(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Declarations (registration phase)
 // ---------------------------------------------------------------------------
 
-/// Declare both machines: a block entity type each, its FE buffer, and the Part that ticks it.
+/// Declare the block families: a block entity type each, the machines' FE buffers, and the Parts
+/// that tick them.
 ///
 /// A declaration is keyed by the block, not written into a shared output, so the retired
 /// `block_entity_energy` hook's "leave a foreign block's entry alone" hazard cannot recur.
@@ -118,10 +244,18 @@ pub(crate) fn declare(registrar: &mut dyn Registrar, context: &RegistrationConte
         .block_entity_type(DYNAMO_TYPE)
         .blocks(&[DYNAMO_TYPE])
         .build();
+    // One type for the three tubes: their volume and tier are the block's, not the entity's.
+    let tube_type = registrar
+        .block_entity_type(TUBE_TYPE)
+        .blocks(&TUBE_BLOCKS)
+        .build();
     if let Err(error) = registrar.block_entity_part(&flux_type, FluxPart) {
         context.refuse(&error.to_string());
     }
     if let Err(error) = registrar.block_entity_part(&dynamo_type, DynamoPart) {
+        context.refuse(&error.to_string());
+    }
+    if let Err(error) = registrar.block_entity_part(&tube_type, TubePart) {
         context.refuse(&error.to_string());
     }
 }
@@ -204,6 +338,34 @@ impl BlockEntityPart for DynamoPart {
     }
 }
 
+/// The three pressure tubes' behaviour (`PressureTubeBlockEntity`).
+pub(crate) struct TubePart;
+
+#[mod_api::horizon_part]
+impl BlockPart for TubePart {}
+
+#[mod_api::horizon_part]
+impl BlockEntityPart for TubePart {
+    /// `EntityBlock.newBlockEntity`: a fresh tube starts empty.
+    fn block_entity(
+        &self,
+        _level: LevelSide,
+        _event: &mut BlockEntityEvent<'_>,
+    ) -> Option<Compound> {
+        Some(Compound::new())
+    }
+
+    /// `EntityBlock.getTicker`: a tube ticks on the server.
+    fn block_entity_ticks(&self, _host: &dyn Host, event: &mut BlockEntityTicksEvent<'_>) {
+        event.ticks = true;
+    }
+
+    /// One server tick of a pressure tube of whichever tier stands here.
+    fn block_entity_tick(&self, host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+        tube_tick(host, event);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The machine tick
 // ---------------------------------------------------------------------------
@@ -234,19 +396,13 @@ pub(crate) fn tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'
     let mut energy = read_int(&saved, KEY_ENERGY).clamp(0, ENERGY_CAPACITY);
     let temperature = read_double(&saved, KEY_TEMPERATURE).unwrap_or(AMBIENT_TEMPERATURE);
 
-    // 1. The air handler's tick: disperse to a lower-pressure connected machine, then vent
+    // 1. The air handler's tick: disperse to a lower-pressure connected handler, then vent
     //    what a lone handler cannot keep.
     match air_neighbour(&*host, level, pos, air_face) {
         Some(seen) => {
-            let (mine, theirs) = disperse((air, kind.volume()), (seen.air, seen.kind.volume()));
+            let (mine, theirs) = disperse((air, kind.volume()), (seen.air, seen.volume));
             air = mine;
-            if theirs != seen.air {
-                let mut patch = Compound::new();
-                write_int(&mut patch, KEY_AIR, theirs);
-                if let Some(other) = host.block_entity(level, seen.pos) {
-                    let _ = other.merge_data(host, patch);
-                }
-            }
+            send_air(level, seen.pos, theirs - seen.air);
         }
         None => {
             if kind == Kind::Flux {
@@ -331,11 +487,12 @@ pub(crate) fn tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'
     }
 }
 
-/// The machine's air handler on `dir`, if a slice-1 machine connects back.
+/// The machine's air handler on `dir`, if a slice-1 machine or one of the tubes connects back.
 ///
 /// The pneumatic face of both machines is `facing.opposite`, as
 /// `canConnectPneumatic(side) { side == getRotation().getOpposite() }` says: a neighbour at
-/// `dir` reaches us only through its own pneumatic face, so its `facing` must be `dir`.
+/// `dir` reaches us only through its own pneumatic face, so its `facing` must be `dir`. A tube
+/// (`PressureTubeBlockEntity.canConnectPneumatic`) accepts every side.
 fn air_neighbour(
     host: &dyn ServerHost,
     level: LevelRef,
@@ -343,19 +500,21 @@ fn air_neighbour(
     dir: Direction,
 ) -> Option<Neighbour> {
     let at = offset(pos, dir);
-    let kind = kind_at(host, level, at)?;
-    let state = level.block_state(host, at)?;
-    let their_facing =
-        property(host, state, PROP_FACING).and_then(|value| parse_direction(&value))?;
-    if their_facing != dir {
-        return None;
+    let kind = handler_kind_at(host, level, at)?;
+    if matches!(kind, HandlerKind::Machine(_)) {
+        let state = level.block_state(host, at)?;
+        let their_facing =
+            property(host, state, PROP_FACING).and_then(|value| parse_direction(&value))?;
+        if their_facing != dir {
+            return None;
+        }
     }
     let entity = host.block_entity(level, at)?;
-    let data = entity.data(host)?;
+    let data = entity.data(host).unwrap_or_default();
     Some(Neighbour {
         pos: at,
         air: read_int(&data, KEY_AIR),
-        kind,
+        volume: kind.volume(),
     })
 }
 
@@ -363,13 +522,129 @@ fn air_neighbour(
 struct Neighbour {
     pos: [i32; 3],
     air: i32,
-    kind: Kind,
+    volume: i32,
 }
 
-/// Which slice-1 machine stands at `pos`, if one does.
-fn kind_at(host: &dyn Host, level: LevelRef, pos: [i32; 3]) -> Option<Kind> {
+/// Which handler stands at `pos`, if one does.
+fn handler_kind_at(host: &dyn Host, level: LevelRef, pos: [i32; 3]) -> Option<HandlerKind> {
     let block = level.block(host, pos)?;
-    Kind::of(&block.id(host))
+    HandlerKind::of(&block.id(host))
+}
+
+// ---------------------------------------------------------------------------
+// The tube tick
+// ---------------------------------------------------------------------------
+
+/// One server tick of a pressure tube (`PressureTubeBlockEntity.tickServer` plus its air
+/// handler's `MachineAirHandler.disperseAir`).
+///
+/// The order is upstream's: find what is connected, disperse to the lower-pressure neighbours,
+/// vent if the tube is a dead end, then show the connections on the block state.
+fn tube_tick(host: &mut dyn ServerHost, event: &mut BlockEntityTickEvent<'_>) {
+    let mut saved = std::mem::take(&mut event.entity.nbt);
+    let before = saved.clone();
+    let Some(level) = level_in_place(host) else {
+        event.entity.nbt = saved;
+        return;
+    };
+    let pos = event.pos;
+    let Some(tube) = level
+        .block(&*host, pos)
+        .and_then(|block| Tube::of(&block.id(&*host)))
+    else {
+        event.entity.nbt = saved;
+        return;
+    };
+    let volume = tube.volume();
+    let mut air = read_int(&saved, KEY_AIR);
+
+    // 1. The connected sides: every face that reaches an air handler.
+    let mut connected = Sides::NONE;
+    let mut links: Vec<Link> = Vec::new();
+    for side in Side::ALL {
+        if let Some(link) = connected_handler(&*host, level, pos, direction(side)) {
+            connected.insert(side);
+            links.push(link);
+        }
+    }
+
+    // 2. The network's dispersion: each strictly lower-pressure neighbour takes its share of
+    //    the air by volume, and the tube keeps the rest (never backwards). The air leaves this
+    //    tube now and reaches the neighbour at `level_tick_post` (`apply_transfers`).
+    let mine = Handler::new(air, volume);
+    let theirs: Vec<Handler> = links.iter().map(|link| link.handler).collect();
+    let (left, moved) = disperse_to_lower(mine, &theirs);
+    air = left;
+    for (link, send) in links.iter().zip(moved) {
+        send_air(level, link.pos, send);
+    }
+
+    // 3. A dead end vents what it cannot keep.
+    if tube_leaks(connected, Sides::NONE) {
+        air -= tube_leak(air, volume);
+    }
+    write_int(&mut saved, KEY_AIR, air);
+
+    // 4. The six connection booleans the blockstate draws (upstream's model data).
+    let shown = visual_sides(connected, Sides::NONE);
+    let mut touched = saved != before;
+    if let Some(state) = level.block_state(&*host, pos) {
+        for side in Side::ALL {
+            let wanted = if shown.has(side) { "true" } else { "false" };
+            if property(&*host, state, side.name()).as_deref() != Some(wanted) {
+                host.set_block_property(pos, side.name(), wanted);
+                touched = true;
+            }
+        }
+    }
+    event.entity.nbt = saved;
+    if !touched {
+        *event.reply = BlockEntityTickReply::Unchanged;
+    }
+}
+
+/// A connected air handler as a tube sees it.
+struct Link {
+    pos: [i32; 3],
+    handler: Handler,
+}
+
+/// The handler a tube reaches on `dir`, if the neighbour accepts a connection on the face
+/// pointing back: a machine on its pneumatic face, or another tube on any side.
+fn connected_handler(
+    host: &dyn ServerHost,
+    level: LevelRef,
+    pos: [i32; 3],
+    dir: Direction,
+) -> Option<Link> {
+    let at = offset(pos, dir);
+    let kind = handler_kind_at(host, level, at)?;
+    if matches!(kind, HandlerKind::Machine(_)) {
+        let state = level.block_state(host, at)?;
+        let facing =
+            property(host, state, PROP_FACING).and_then(|value| parse_direction(&value))?;
+        if facing != dir {
+            return None;
+        }
+    }
+    let entity = host.block_entity(level, at)?;
+    let data = entity.data(host).unwrap_or_default();
+    Some(Link {
+        pos: at,
+        handler: Handler::new(read_int(&data, KEY_AIR), kind.volume()),
+    })
+}
+
+/// A [`Side`] as the game's direction.
+fn direction(side: Side) -> Direction {
+    match side {
+        Side::Down => Direction::Down,
+        Side::Up => Direction::Up,
+        Side::North => Direction::North,
+        Side::South => Direction::South,
+        Side::West => Direction::West,
+        Side::East => Direction::East,
+    }
 }
 
 /// The level the server is ticking now: the one a block-entity tick runs in.
@@ -441,12 +716,12 @@ pub(crate) fn run_command(host: &mut dyn ServerHost, event: &mut RunModCommandEv
             // The machine clamps at the critical pressure, so the reply states what it stored,
             // not what was asked for (the 0.1.0 line repeated the request).
             Some(stored) => format!("PneumaticCraft at {pos:?}: air set to {stored} mL."),
-            None => format!("{pos:?} is not a slice-1 PneumaticCraft machine."),
+            None => format!("{pos:?} is not a PneumaticCraft machine."),
         },
         (["pneumaticcraft", "energy"], Some(pos), Some(amount)) => {
             match set_energy(host, pos, amount) {
                 Some(stored) => format!("PneumaticCraft at {pos:?}: FE set to {stored}."),
-                None => format!("{pos:?} is not a slice-1 PneumaticCraft machine."),
+                None => format!("{pos:?} is not a PneumaticCraft machine."),
             }
         }
         _ => return Flow::Continue,
@@ -472,13 +747,15 @@ pub(crate) struct Sight<'a> {
     pub(crate) energy: i32,
     pub(crate) temperature: f64,
     pub(crate) active: &'a str,
+    /// A tube's real connections; `None` for a machine, which has one pneumatic face.
+    pub(crate) links: Option<usize>,
     pub(crate) now: i64,
 }
 
 impl Sight<'_> {
     /// The report line, one field per number the model owns: the 0.1.0 e2e parses every one.
     pub(crate) fn line(&self) -> String {
-        format!(
+        let line = format!(
             "PC {} {:?} air={} volume={} bar={:.3} fe={} temp={:.1} eff={} active={} t={}",
             self.id,
             self.pos,
@@ -490,7 +767,11 @@ impl Sight<'_> {
             heat_efficiency(self.temperature),
             self.active,
             self.now
-        )
+        );
+        match self.links {
+            Some(links) => format!("{line} links={links}"),
+            None => line,
+        }
     }
 }
 
@@ -506,7 +787,7 @@ fn readout(host: &mut dyn ServerHost, pos: [i32; 3]) -> String {
         return format!("{pos:?} is not a mod block entity.");
     };
     let id = block.id(&*host);
-    let Some(kind) = Kind::of(&id) else {
+    let Some(kind) = HandlerKind::of(&id) else {
         return format!("{pos:?} is a {id} not a PneumaticCraft machine.");
     };
     let data = entity.data(&*host).unwrap_or_default();
@@ -514,55 +795,91 @@ fn readout(host: &mut dyn ServerHost, pos: [i32; 3]) -> String {
     let active = state
         .and_then(|state| property(&*host, state, PROP_ACTIVE))
         .unwrap_or_else(|| "false".to_owned());
+    // A tube holds air and nothing else: no FE buffer, no heat exchanger, no `active` state.
+    let (energy, temperature) = match kind {
+        HandlerKind::Machine(_) => (
+            read_int(&data, KEY_ENERGY).clamp(0, ENERGY_CAPACITY),
+            read_double(&data, KEY_TEMPERATURE).unwrap_or(AMBIENT_TEMPERATURE),
+        ),
+        HandlerKind::Tube(_) => (0, AMBIENT_TEMPERATURE),
+    };
     let sight = Sight {
         id: &id,
         pos,
         air: read_int(&data, KEY_AIR),
         volume: kind.volume(),
-        energy: read_int(&data, KEY_ENERGY).clamp(0, ENERGY_CAPACITY),
-        temperature: read_double(&data, KEY_TEMPERATURE).unwrap_or(AMBIENT_TEMPERATURE),
+        energy,
+        temperature,
         active: &active,
+        links: match kind {
+            HandlerKind::Machine(_) => None,
+            // A tube's *real* connections, which the block state cannot tell from the
+            // opposite side it shows for a single one.
+            HandlerKind::Tube(_) => Some(
+                Side::ALL
+                    .into_iter()
+                    .filter(|side| {
+                        connected_handler(&*host, level, pos, direction(*side)).is_some()
+                    })
+                    .count(),
+            ),
+        },
         now: level.game_time(&*host).unwrap_or(0),
     };
     sight.line()
 }
 
 /// `/pneumaticcraft air <pos> <mL>`: set the handler's amount through the same clamp the model
-/// owns (never above the critical pressure). Answers what the machine stores.
+/// owns (never above the critical pressure). Answers what the block will store.
 fn set_air(host: &mut dyn ServerHost, pos: [i32; 3], amount: i32) -> Option<i32> {
     let level = level_in_place(host)?;
-    let kind = kind_at(&*host, level, pos)?;
-    let entity = host.block_entity(level, pos)?;
-    let data = entity.data(&*host).unwrap_or_default();
+    let kind = handler_kind_at(&*host, level, pos)?;
+    let data = host
+        .block_entity(level, pos)
+        .and_then(|entity| entity.data(&*host))
+        .unwrap_or_default();
     let temperature = read_double(&data, KEY_TEMPERATURE).unwrap_or(AMBIENT_TEMPERATURE);
     let clamped = match kind {
-        Kind::Flux => {
+        HandlerKind::Machine(Kind::Flux) => {
             let mut machine = FluxCompressor::new(0, 0, temperature);
             machine.set_air(amount);
             machine.air
         }
-        Kind::Dynamo => {
+        HandlerKind::Machine(Kind::Dynamo) => {
             let mut machine = PneumaticDynamo::new(0, 0, temperature);
             machine.set_air(amount);
             machine.air
         }
+        HandlerKind::Tube(tube) => tube.clamped_air(amount),
     };
-    let mut patch = Compound::new();
-    write_int(&mut patch, KEY_AIR, clamped);
-    // `merge_data` is `/data merge block`: it loads the patch and marks the chunk changed,
-    // which is the `setChanged` the retired bundle had to fake.
-    entity.merge_data(host, patch).ok().map(|_| clamped)
+    // Queued, not merged now: a write made inside the level tick is lost when the handler's own
+    // tick writes its starting compound back (`Pending`).
+    queue(Pending::SetAir {
+        level,
+        pos,
+        air: clamped,
+    });
+    Some(clamped)
 }
 
-/// `/pneumaticcraft energy <pos> <FE>`: set the buffer's amount, clamped to its capacity.
+/// `/pneumaticcraft energy <pos> <FE>`: set the buffer's amount, clamped to its capacity. A tube
+/// has no buffer, so it is refused.
 fn set_energy(host: &mut dyn ServerHost, pos: [i32; 3], amount: i32) -> Option<i32> {
     let level = level_in_place(host)?;
-    kind_at(&*host, level, pos)?;
-    let entity = host.block_entity(level, pos)?;
+    if !matches!(
+        handler_kind_at(&*host, level, pos)?,
+        HandlerKind::Machine(_)
+    ) {
+        return None;
+    }
+    host.block_entity(level, pos)?;
     let stored = amount.clamp(0, ENERGY_CAPACITY);
-    let mut patch = Compound::new();
-    write_int(&mut patch, KEY_ENERGY, stored);
-    entity.merge_data(host, patch).ok().map(|_| stored)
+    queue(Pending::SetEnergy {
+        level,
+        pos,
+        energy: stored,
+    });
+    Some(stored)
 }
 
 // ---------------------------------------------------------------------------
@@ -649,6 +966,47 @@ mod tests {
     }
 
     #[test]
+    fn the_three_tubes_are_one_block_entity_type_over_three_blocks() {
+        assert_eq!(TUBE_TYPE, "pressure_tube");
+        assert_eq!(
+            TUBE_BLOCKS,
+            [
+                "pressure_tube",
+                "reinforced_pressure_tube",
+                "advanced_pressure_tube"
+            ],
+            "the type's blocks, as ModBlocks declares them"
+        );
+        for tube in [Tube::Pressure, Tube::Reinforced, Tube::Advanced] {
+            assert_eq!(
+                HandlerKind::of(tube.id()),
+                Some(HandlerKind::Tube(tube)),
+                "{} is a tube handler",
+                tube.id()
+            );
+            assert_eq!(HandlerKind::Tube(tube).volume(), tube.volume());
+        }
+        assert_eq!(
+            HandlerKind::of(FLUX),
+            Some(HandlerKind::Machine(Kind::Flux)),
+            "a machine stays a machine handler"
+        );
+        assert_eq!(HandlerKind::of("minecraft:stone"), None);
+    }
+
+    #[test]
+    fn the_tubes_have_no_energy_buffer() {
+        // `set_energy` refuses a tube: only a machine answers the FE harness command.
+        for tube in [Tube::Pressure, Tube::Reinforced, Tube::Advanced] {
+            assert!(
+                !matches!(HandlerKind::of(tube.id()), Some(HandlerKind::Machine(_))),
+                "{} must not take FE",
+                tube.id()
+            );
+        }
+    }
+
+    #[test]
     fn the_saved_compound_round_trips_its_keys_and_types() {
         let mut nbt = Compound::new();
         assert_eq!(read_int(&nbt, KEY_AIR), 0, "an absent key reads 0");
@@ -695,6 +1053,7 @@ mod tests {
             energy: 96_000,
             temperature: 297.2,
             active: "true",
+            links: None,
             now: 1_240,
         };
         assert_eq!(
@@ -710,12 +1069,34 @@ mod tests {
             energy: 0,
             temperature: 300.0,
             active: "false",
+            links: None,
             now: 0,
         };
         assert_eq!(
             idle.line(),
             "PC pneumaticcraft:pneumatic_dynamo [-8, 64, 12] air=0 volume=10000 bar=0.000 \
              fe=0 temp=300.0 eff=100 active=false t=0"
+        );
+    }
+
+    #[test]
+    fn a_tube_s_line_ends_with_its_real_connections() {
+        let tube = Sight {
+            id: "pneumaticcraft:pressure_tube",
+            pos: [303, 101, 0],
+            air: 500,
+            volume: 1_000,
+            energy: 0,
+            temperature: 300.0,
+            active: "false",
+            links: Some(2),
+            now: 1_240,
+        };
+        assert_eq!(
+            tube.line(),
+            "PC pneumaticcraft:pressure_tube [303, 101, 0] air=500 volume=1000 bar=0.500 \
+             fe=0 temp=300.0 eff=100 active=false t=1240 links=2",
+            "a tube's real connections, not the opposite side it shows"
         );
     }
 }

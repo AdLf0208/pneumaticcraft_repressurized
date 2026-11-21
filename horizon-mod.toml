@@ -1,6 +1,6 @@
 id = "pneumaticcraft"
 name = "PneumaticCraft: Repressurized"
-version = "0.2.0"
+version = "0.2.1"
 description = """A port of PneumaticCraft: Repressurized for Horizon, slice 1: the flux compressor turns Forge
 Energy into compressed air and the pneumatic dynamo turns it back. The compressor spends 40 FE a tick
 for 16 mL of air at 100 % heat efficiency into a 10,000 mL tier-two handler, the dynamo needs more than
@@ -8,8 +8,11 @@ for 16 mL of air at 100 % heat efficiency into a 10,000 mL tier-two handler, the
 PneumaticCraft pressure connection, so each tick the higher-pressure handler sends the lower-pressure
 one to its volume share. A block that reaches no other handler leaks (pressure * 40) + 20 mL a tick,
 the heat exchanger uses upstream's efficiency formula, and every rate and the block's active state come
-from the mod's own numbers. The pressure tube network, upgrades, menus, the overpressure explosion, the
-other machine families and crafting recipes are not ported yet."""
+from the mod's own numbers. The pressure tubes (basic, reinforced and advanced) carry the air between
+them: each is its own 1,000 mL or 4,000 mL handler, a tube sends to every lower-pressure neighbour its
+share of the air by volume, a dead end vents (pressure * 40) + 20 mL a tick, and the six connections are
+on the block state. Upgrades, tube modules, the wrench, camouflage, tube junctions, menus, the
+overpressure explosion, the other machine families and crafting recipes are not ported yet."""
 authors = ["TeamPneumatic", "AdLf0208"]
 # The original's licence: GPL-3.0-only, read from the jar's `neoforge.mods.toml`
 # (`license="GNU GPLv3"`); the GPLv3 text and the complete corresponding source travel
@@ -29,5 +32,5 @@ capabilities = ["registries"]
 
 [native]
 game = "26.3"
-horizon = "0b14f8acfd97fa2c750e42795249dcc981178ca4"
+horizon = "0a875da91dbb0fdcb7ba8c42c11341aa229af51a"
 mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"

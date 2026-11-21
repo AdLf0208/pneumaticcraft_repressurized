@@ -1,0 +1,80 @@
+{
+  "credit": "Made with Blockbench",
+  "elements": [
+    {
+      "faces": {
+        "down": {
+          "texture": "#pipe",
+          "uv": [
+            6.003,
+            9.997,
+            9.997,
+            6.003
+          ]
+        },
+        "east": {
+          "rotation": 90,
+          "texture": "#pipe",
+          "uv": [
+            9,
+            6,
+            10,
+            10
+          ]
+        },
+        "north": {
+          "texture": "#pipe",
+          "uv": [
+            6,
+            6,
+            9.994,
+            7
+          ]
+        },
+        "south": {
+          "texture": "#pipe",
+          "uv": [
+            6,
+            9,
+            9.994,
+            10
+          ]
+        },
+        "up": {
+          "texture": "#pipe",
+          "uv": [
+            6,
+            6,
+            9.994,
+            9.994
+          ]
+        },
+        "west": {
+          "rotation": 270,
+          "texture": "#pipe",
+          "uv": [
+            6,
+            6,
+            7,
+            10
+          ]
+        }
+      },
+      "from": [
+        6.003,
+        9.997,
+        6.003
+      ],
+      "to": [
+        9.997,
+        10.997,
+        9.997
+      ]
+    }
+  ],
+  "render_type": "solid",
+  "textures": {
+    "particle": "pneumaticcraft:pnc_model/advanced_pressure_tube",
+    "pipe": "pneumaticcraft:pnc_model/advanced_pressure_tube"
+  }
+}

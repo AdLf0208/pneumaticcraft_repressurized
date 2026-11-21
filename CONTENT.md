@@ -61,8 +61,43 @@ jar; only the re-spellings 26.3 needs are made.
 - **Patchouli book pages**, sounds, particles and the block entity renderers: not part of this
   slice; the block models are static like upstream's.
 
-## Size and hashes
+## Slice 2 — the three pressure tubes
 
+Carried byte-for-byte from the same jar:
+
+| What | Jar path |
+|---|---|
+| textures | `assets/pneumaticcraft/textures/pnc_model/{pressure_tube,reinforced_pressure_tube,advanced_pressure_tube}.png` |
+| the arm a connected side draws, in the UP orientation | `assets/pneumaticcraft/models/block/{…}_connected.json` (4 elements, Blockbench) |
+| the inventory model both item models parent | `assets/pneumaticcraft/models/block/pressure_tube_inv.json` |
+| item models | `assets/pneumaticcraft/models/item/{…}.json` (parent `pressure_tube_inv` + a `pipe` texture override) |
+| loot tables | `data/pneumaticcraft/loot_table/blocks/{…}.json` (re-spelt like the machines': one typed condition, no unregistered components) |
+
+Written here:
+
+1. **The face plate** (`{…}_collar.json`): the jar's one `pressure_tube_disconnected.json` — the
+   4×4 plate a free side shows (`PressureTubeModelLoader` loads it as the "core" part) — its `pipe`
+   and `particle` textures pointed at the tube it belongs to. Geometry unchanged.
+2. **The blockstates** (`{…}.json`): a multipart of 12 selectors — for each of the six sides the
+   arm when the boolean is `true` and the face plate when it is `false`, rotated exactly as
+   `PressureTubeGeometry.ROTATIONS` rotates the parts (X180 down, X0 up, X90 north, X90/Y180 south,
+   X90/Y270 west, X90/Y90 east). Upstream's single custom-loader blockstate cannot be ported (the
+   pin has no custom model loader), so the same parts are assembled by the blockstate instead.
+3. **The block declarations** (`data/pneumaticcraft/horizon/block/{…}.json`): the chorus plant's
+   `PipeBlock` template with `connects_to: "#pneumaticcraft:pressure_tubes"` and
+   `thickness: 4.0`, which is upstream's `CORE_SHAPE`/`ARM_CONNECTED` geometry (a 4-pixel core and
+   arms); `occludes: false` = `defaultProps().noOcclusion()`. The six
+   `down/up/north/south/east/west` booleans are the template's own.
+4. **The tube tag** (`data/pneumaticcraft/tags/block/pressure_tubes.json`): the three tubes, which
+   is what the engine's `PipeBlock` joins (a machine joins through its own pneumatic face, which
+   the port sets on the block state).
+5. **The item definitions** (`assets/pneumaticcraft/items/{…}.json`): the 26.3 `minecraft:model`
+   shape, like the machines'.
+
+The creative tab now lists the five blocks. `tools/assemble_content.py` writes all of it (and
+rewrites `assets/`/`data/` from scratch, so it is reproducible).
+
+## Size and hashes
 The 0.1.0 content package was `content/pneumaticcraft.hmod` — 131,324 B, SHA-256
 `0cae9fda259bc50b9a7e167636a38103d129b5ed4ead61e09a9b0ca2daf9f205`, 25 entries, `no code: content
 only`, carried inside the `.hnmod` (the AE2 pattern). Both are retired evidence. The same 24 files

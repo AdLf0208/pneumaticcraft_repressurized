@@ -116,6 +116,51 @@ both ways and block-to-block energy movement (`native_move_energy`).
 - `common/block/entity/PneumaticEnergyStorage.java` — plain `EnergyStorage(capacity)`: both
   insert and extract are allowed; the *faces* decide which side reaches it.
 
+## Slice 2 — the pressure tubes (read 2026-11-21 for 0.2.1)
+
+Upstream <https://github.com/TeamPneumatic/pnc-repressurized> `1.21` @
+`7bcbcbc744a851d158d924cfa3ce6e88fb8ccb28` (2026-11-15). Cloned shallow to scratch for the
+analysis and deleted after the findings below were written; nothing from it is copied into the
+port (the Rust is a rewrite, the carried assets come from the pack jar).
+
+Files read: `common/block/entity/tube/{PressureTubeBlockEntity,AdvancedPressureTubeBlockEntity,
+ReinforcedPressureTubeBlockEntity}.java`, `common/block/PressureTubeBlock.java`,
+`common/capabilities/MachineAirHandler.java`, `common/block/entity/AbstractAirHandlingBlockEntity.java`,
+`api/pressure/PressureTier.java`, `lib/PneumaticValues.java`,
+`client/model/custom/pressure_tube/{PressureTubeGeometry,PressureTubeModelLoader}.java`, and the
+jar's own `patchouli_books/book/en_us/entries/tubes/pressure_tubes.json`.
+
+Behaviours extracted (each is in `notes.md` with the port's counterpart):
+
+- A tube is its own air handler: `new MachineAirHandler(tier, volume)` in the block entity's
+  constructor. **Volumes/tiers:** basic 1,000 mL / TIER_ONE (5 danger, 7 critical); reinforced
+  1,000 mL / TIER_ONE_HALF (10, 12); advanced 4,000 mL / TIER_TWO (20, 25). The book says the same
+  ("Tier 1 … 1000mL … Tier 1.5 (Reinforced) … 1000mL … Tier 2 (Advanced) … 4000mL").
+- **Connections are discovered** (`discoverConnectedNeighbors`), not stored: a face joins when the
+  neighbour exposes an air-handler capability through `canConnectPneumatic` — a tube accepts every
+  side, a machine only `facing.opposite`. Only `sidesClosed` (the wrench) is saved.
+- **A tube with one connection shows the opposite side** (`calculateVisuallyConnected`), so a run
+  looks like a run; a closed side or a module turns that off.
+- **Dispersion** (`MachineAirHandler.disperseAir`): the neighbours considered are only those at a
+  strictly lower pressure; the total is this handler plus *those* neighbours; each is brought to
+  `total_air * neighbour_volume / total_volume`; nothing flows backwards; `maxDispersion` is
+  unlimited without a module. Air therefore moves one hop per handler tick.
+- **Leak** (`PressureTubeBlockEntity.tickServer` + `handleAirLeak`): only when exactly one side
+  reaches a handler and nothing is closed or attached, `(int)(pressure * 40) + 20` mL a tick,
+  capped at what the tube holds; the vent's *direction* is the side opposite the connection.
+- **A machine's leak** is `hasNoConnectedAirHandlers() ? facing.opposite : null`, so a compressor
+  feeding a tube no longer vents.
+- **Model**: `PressureTubeModelLoader` loads `block/<pfx>pressure_tube_{disconnected,connected,
+  closed}` — the 4×4 face plate, the arm and the plug — and bakes them rotated per direction
+  (`PressureTubeGeometry.ROTATIONS`: X180 down, X0 up, X90 north, X90/Y180 south, X90/Y270 west,
+  X90/Y90 east) around the block centre, with the core from `PressureTubeBlock.CORE_SHAPE` (4 px).
+  The pin has no custom model loader, so the port assembles the same parts in a multipart
+  blockstate.
+
+Not ported from this family: `sidesClosed` (the pneumatic wrench), tube modules, camouflage,
+waterlogging, and `TubeJunctionBlockEntity` (two independent 4,000 mL channels on the two axes
+crossing at right angles) — recorded as gaps.
+
 ## Slice boundary (what slice 1 is, and what it deliberately is not)
 
 **In:** the two blocks and their items, carried blockstates/models/textures/lang/loot/tags;

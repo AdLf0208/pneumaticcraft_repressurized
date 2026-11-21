@@ -46,6 +46,11 @@ MOD = "pneumaticcraft"
 JAR_SHA1 = "bced402c1224d948554b1e8fcca2aa002c00864f"
 
 BLOCKS = ("flux_compressor", "pneumatic_dynamo")
+# Slice 2: the three pressure tubes. They are connecting blocks on the chorus plant's
+# `PipeBlock`: six `down/up/north/south/east/west` booleans, a 4-pixel arm, and the block
+# state `thickness` shapes.
+TUBES = ("pressure_tube", "reinforced_pressure_tube", "advanced_pressure_tube")
+TUBE_TAG = "pressure_tubes"
 
 # Carried byte-for-byte: the jar's own assets and data.
 CARRIED = [
@@ -58,6 +63,13 @@ CARRIED = [
     *(f"data/{MOD}/loot_table/blocks/{name}.json" for name in BLOCKS),
     "data/minecraft/tags/block/mineable/pickaxe.json",
     "data/minecraft/tags/block/needs_iron_tool.json",
+    # Slice 2: the tubes' art and their two Blockbench parts — the up-facing arm and the
+    # face plate an unconnected side shows (`PressureTubeModelLoader` loads exactly these).
+    *(f"assets/{MOD}/textures/pnc_model/{name}.png" for name in TUBES),
+    *(f"assets/{MOD}/models/block/{name}_connected.json" for name in TUBES),
+    f"assets/{MOD}/models/block/pressure_tube_inv.json",
+    *(f"assets/{MOD}/models/item/{name}.json" for name in TUBES),
+    *(f"data/{MOD}/loot_table/blocks/{name}.json" for name in TUBES),
 ]
 
 # `defaultProps()`: `strength(3.0, 10.0).sound(METAL).mapColor(METAL)`; the
@@ -99,11 +111,59 @@ ITEM_DEFINITION = {
     name: {"model": {"type": "minecraft:model", "model": f"{MOD}:item/{name}"}}
     for name in BLOCKS
 }
+ITEM_DEFINITION.update(
+    {name: {"model": {"type": "minecraft:model", "model": f"{MOD}:item/{name}"}} for name in TUBES}
+)
+
+# The tubes: `defaultProps().noOcclusion()` upstream, and the chorus plant's own six
+# connecting booleans (the template carries them, so no `state_properties` here).
+TUBE_PROPERTIES = {**PROPERTIES, "occludes": False}
+
+BLOCK_DECLARATIONS.update(
+    {
+        name: {
+            "template": "minecraft:chorus_plant",
+            "connects_to": f"#{MOD}:{TUBE_TAG}",
+            "thickness": 4.0,
+            "properties": TUBE_PROPERTIES,
+            "item": True,
+        }
+        for name in TUBES
+    }
+)
+
+# The arm that is drawn for a connected side, and the face plate for a free one: both are the
+# jar's own Blockbench parts, in the UP orientation, rotated by the blockstate
+# (`PressureTubeGeometry.ROTATIONS`: X180 for down, X0 for up, X90 for north, X90/Y180 for
+# south, X90/Y270 for west, X90/Y90 for east).
+TUBE_ROTATIONS = {
+    "down": {"x": 180},
+    "up": {},
+    "north": {"x": 90},
+    "south": {"x": 90, "y": 180},
+    "west": {"x": 90, "y": 270},
+    "east": {"x": 90, "y": 90},
+}
+
+
+def tube_blockstate(name: str) -> dict:
+    """Every side draws the arm when it connects and the face plate when it does not."""
+    multipart = []
+    for side, rotation in TUBE_ROTATIONS.items():
+        for connected in ("true", "false"):
+            part = f"{name}_connected" if connected == "true" else f"{name}_collar"
+            multipart.append(
+                {
+                    "when": {side: connected},
+                    "apply": {"model": f"{MOD}:block/{part}", **rotation},
+                }
+            )
+    return {"multipart": multipart}
 
 TAB = {
     "title": "itemGroup.pneumaticcraft",
     "icon": f"{MOD}:flux_compressor",
-    "items": [f"{MOD}:{name}" for name in BLOCKS],
+    "items": [f"{MOD}:{name}" for name in (*BLOCKS, *TUBES)],
 }
 
 
@@ -153,6 +213,23 @@ def main() -> None:
     for block, declaration in BLOCK_DECLARATIONS.items():
         write(CONTENT / f"data/{MOD}/horizon/block/{block}.json", declaration)
         write(CONTENT / f"assets/{MOD}/items/{block}.json", ITEM_DEFINITION[block])
+    # The tubes' face plates: the jar's one `pressure_tube_disconnected` part (a 4x4 plate on
+    # a free side), its texture pointed at the tube it belongs to.
+    collar = json.loads(
+        archive.read(f"assets/{MOD}/models/block/pressure_tube_disconnected.json")
+    )
+    for name in TUBES:
+        plate = json.loads(json.dumps(collar))
+        plate["textures"] = {
+            "particle": f"{MOD}:pnc_model/{name}",
+            "pipe": f"{MOD}:pnc_model/{name}",
+        }
+        write(CONTENT / f"assets/{MOD}/models/block/{name}_collar.json", plate)
+        write(CONTENT / f"assets/{MOD}/blockstates/{name}.json", tube_blockstate(name))
+    write(
+        CONTENT / f"data/{MOD}/tags/block/{TUBE_TAG}.json",
+        {"values": [f"{MOD}:{name}" for name in TUBES]},
+    )
     write(CONTENT / f"data/{MOD}/horizon/creative_tab/pneumaticcraft.json", TAB)
 
     files = sorted(

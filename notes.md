@@ -1,22 +1,22 @@
-# PneumaticCraft: Repressurized — port notes (slice 1: the FE ↔ air conversion pair)
+# PneumaticCraft: Repressurized — port notes (slices 1–2)
 
 Ported from **PneumaticCraft: Repressurized 8.2.24** (`pneumaticcraft-repressurized-8.2.24-mc1.21.1.jar`,
 SHA-1 `bced402c1224d948554b1e8fcca2aa002c00864f`, SHA-256
 `03fa26883002b4252ec669a277b6fecf3367284e333a2165178fd236056f0b15`, 11,885,688 B, 5,679 entries)
 for Minecraft Java 1.21.1 / NeoForge. Upstream
-<https://github.com/TeamPneumatic/pnc-repressurized> `1.21` @ `00b2c5fc…` (8.2.25).
+<https://github.com/TeamPneumatic/pnc-repressurized> `1.21` @ `7bcbcbc7` (0.x line, 2026-11-15).
 **GPL-3.0-only → licence rank 1 (copyleft)**: the jar's `META-INF/neoforge.mods.toml` says
 `license="GNU GPLv3"`, not the source map's `LGPL-2.1-only` — **the artefact wins**. The complete
 corresponding source is this directory, and the full licence texts travel with it
 (`LICENSE`, 701 lines of GPLv3; `COPYING.LESSER` for upstream's API). Local until the maintainer
 approves publishing (ARCHITECTURE.md §8); publishing is under the same licence with this source.
-Pin **`1d63e0a5a37a7a708eb0b32b49bf0dfeb28ed8a9`** (`game.rs` `64813cf4…`), mixins
-**`5a64af938ec86b00d53d16a408aabc0038fb3e57`** (schema 6).
+Pin **`0a875da91dbb0fdcb7ba8c42c11341aa229af51a`** (Nightly 2026-11-20), mixins
+**`e59da9094f0c2fdda6c627fe9eff22dec6a906f0`**.
 
 Status: **ported-partial** — slice 1 (the flux compressor, the pneumatic dynamo, their FE buffers,
-the air handler with leak and dispersion, the heat model and the harness readout, with the block
-content embedded in the `.hnmod`) is implemented and verified in-game. The gap list below is the
-rest of the mod.
+the air handler with leak and dispersion, the heat model and the harness readout) and slice 2 (the
+three pressure tubes and the network between them) are implemented and verified in-game at
+`0a875da` (0.2.1). The gap list below is the rest of the mod.
 
 **Why this mod now:** `python3 ports/tools/precheck-mod.py pneumaticcraft` →
 `DISPATCHABLE`, class `content` / tier `deep`, core, P0, licence GPL (rank 1) read from the jar,
@@ -124,12 +124,174 @@ file is byte-identical to `content/pneumaticcraft.hmod`, and a control launch wi
 6. **Item components are not registered** (`pneumaticcraft:air`, `:be_saved_rc`, `:upgrades`), so
    the carried loot tables drop the plain item (their `copy_components` functions are removed).
 
-## Gaps (the rest of the mod; slice 2+)
+## Slice 2 — the pressure-tube network (0.2.1, 2026-11-21)
 
-- **Pressure tubes** (`pressure_tube`, `advanced_pressure_tube`, `reinforced_pressure_tube`,
-  `tube_junction`) and tube modules — the network proper: six-sided connection state, tube
-  volume aggregation, leaks over a network, modules, camouflage. This is the next slice and the
-  block most of the mod stands on.
+### The slice, and the gap line it comes from
+
+`notes.md`'s own gap list, first bullet, verbatim:
+
+> **Pressure tubes** (`pressure_tube`, `advanced_pressure_tube`, `reinforced_pressure_tube`,
+> `tube_junction`) and tube modules — the network proper: six-sided connection state, tube
+> volume aggregation, leaks over a network, modules, camouflage. This is the next slice and the
+> block most of the mod stands on.
+
+Slice 2 is the network half of that line: the **three tubes, their six-sided connection state,
+their volumes and tiers, dispersion across the network and the dead-end leak**. The rest of the
+line (wrench/closed sides, modules, camouflage, `tube_junction`) stays in the gap list, because
+each is a different mechanism: the wrench changes `sidesClosed`, modules are a block-entity
+inventory of their own, camouflage is a client render path, and a junction holds two independent
+channels in one block entity. It fits the tier (`deep`) as a machines-shaped block family with a
+block entity and a tick — no renderer, entity AI or dimension work.
+
+### What upstream does (read, not guessed)
+
+Source: `pnc-repressurized` `1.21` @ `7bcbcbc7` (2026-11-15), cloned to scratch for this job and
+deleted after the findings were recorded; the jar's own Patchouli page agrees on the numbers.
+
+| Upstream | Where | Port |
+|---|---|---|
+| every tube is its own `MachineAirHandler(tier, volume)` | `PressureTubeBlockEntity.java:80-85`, `:83` | one block entity type, volume from the block id (`Tube::volume`) |
+| `pressure_tube` 1,000 mL / TIER_ONE (danger 5, critical 7); `reinforced` 1,000 mL / TIER_ONE_HALF (10, 12); `advanced` 4,000 mL / TIER_TWO (20, 25) | `PneumaticValues.java:82,90`, `PressureTier.java`, `ReinforcedPressureTubeBlockEntity`, `AdvancedPressureTubeBlockEntity` | `src/tubes.rs` constants, pinned by a test |
+| connections are *discovered*: every face that reaches an air-handler capability, through `canConnectPneumatic` (a machine: `side == facing.opposite`; a tube: any side) | `PressureTubeBlockEntity.discoverConnectedNeighbors` (`:346-359`), `canConnectPneumatic` (`:322-327`) | `connected_handler` in `src/support.rs`, both directions |
+| a tube with one connection also **shows** the opposite side | `calculateVisuallyConnected` (`:361-376`) | `tubes::visual_sides`, written to the six block state booleans each tick |
+| dispersion: only *strictly lower-pressure* neighbours; total over self + those neighbours only; each gets `total_air × neighbour_volume / total_volume − neighbour_air`, never negative | `MachineAirHandler.disperseAir` (`:295-323`) | `tubes::disperse_to_lower` (and it agrees with slice 1's pair rule at N = 1) |
+| a tube vents only with **exactly one** connected side (and no closed side, no module): `(int)(pressure × 40) + 20` mL, capped at what it holds | `PressureTubeBlockEntity.tickServer` (`:194-225`), `MachineAirHandler.handleAirLeak` (`:203-241`) | `tubes::tube_leaks` + `runtime::leak` |
+| the flux compressor leaks only when it has **no** connected handler, so a machine feeding a tube stops leaking | `FluxCompressorBlockEntity.java:115` | unchanged from slice 1: its one pneumatic face now reaches a tube |
+
+The tube's shape is upstream's `CORE_SHAPE` + `ARM_CONNECTED`: a 4-pixel core with 4-pixel arms
+(`PressureTubeBlock.java:71-83`). The content declaration reproduces it with `thickness: 4.0` on
+the chorus plant's `PipeBlock` template (`horizon-world`'s `pipe_shape` is the same geometry), and
+the six block state booleans are upstream's `sidesVisuallyConnected` model data.
+
+### Hooks
+
+| Hook (API) | Where | What it does |
+|---|---|---|
+| `block_entity_tick` (17) | `TubePart::block_entity_tick` → `support::tube_tick` | one tube tick: connections, dispersion, leak, the six booleans |
+| `level_tick_post` (1) | `Mod::level_tick_post` → `support::apply_pending` | delivers every handler write queued this tick (dispersion sends and the harness's sets) |
+| `block_entity`, `block_entity_ticks` (15) | `TubePart` | the tube type's compound and server tick |
+| `block_entity_type` | `Registrar::block_entity_type("pressure_tube").blocks(&[...3 blocks])` | one type over the three tubes |
+
+`level_tick_post` is new to the port and is **load-bearing**, not a convenience — see the trap
+below.
+
+### Deviations (recorded, not hidden)
+
+7. **The connection state is on the block state, not in model data.** The pin has no custom model
+   loader, so upstream's `CONNECTION_PROPERTY`/`PressureTubeModel` cannot be ported; the six
+   `down/up/north/south/east/west` booleans the chorus plant template already has carry the same
+   information, and the blockstate is a multipart of the two carried Blockbench parts (the arm for
+   a connected side, the face plate for a free one) rotated exactly as
+   `PressureTubeGeometry.ROTATIONS` rotates them.
+8. **The tube's saved shape is flat too** — `air` (int) on the block entity, like the machines';
+   upstream saves a nested `AirHandler` compound. A save written by upstream is not read.
+9. **Dispersion is applied after the tick pass.** Upstream mutates its neighbours' live handlers
+   inside each handler's tick; the SDK hands a tick a compound it writes back, so a write to a
+   neighbour during a tick is lost (measured, below). This port computes the same sends in the
+   tick and delivers them in `level_tick_post`, as a delta on the neighbour's current air. The
+   arithmetic is upstream's; only the moment of the write differs.
+10. **The `active` property on a tube does not exist** (upstream has none), and `temp`/`eff`/`fe`
+    in the harness readout are fixed at `300.0`/`100`/`0` for a tube: it has no heat exchanger and
+    no FE buffer. A tube's readout ends with `links=<n>`, its **real** connection count (the
+    block state cannot show it: a single connection also shows its opposite side).
+
+### The trap this slice found (worth more than the slice)
+
+**A write to a block entity made during a tick is overwritten by that block entity's own write-back
+— including a write made by another block entity's tick, and by a command.** Slice 1 never saw it
+because a pair's sends are ~16 mL a tick; a 4-handler network at 25 bar sends 70,000 mL a tick, so
+the loss (about 200,000 mL in 40 ticks) emptied the network within a second. It was measured, not
+theorised: a closed ring of four tubes (where no leak is possible) kept all 4,000 mL only once the
+send was queued (`apply_pending`), and the harness's own `/pneumaticcraft air` was losing whole
+sets for the same reason — two of three 25-bar sets vanished. Both now go through the queue, which
+is why the e2e reads 24.9 / 24.8 / 24.7 / 24.6 bar after filling 25 / 25 / 25 / 25.
+
+The corollary for the next port: **any mod that mutates another block entity — a cable network, a
+hopper chain, a pusher — must do it at `level_tick_post`, as a delta on the target's current value,
+or it loses the write.**
+
+### Red → green (TDD, quoted)
+
+`src/tubes.rs` was written with the rules as `todo!()` and their tests beside them:
+
+```
+$ cargo test --offline                     # ports/_shared/evidence/pneumaticcraft/tubes-red.log
+thread 'tubes::tests::three_handlers_share_by_volume' panicked at src/tubes.rs:247:5:
+not yet implemented: the network's dispersion
+thread 'tubes::tests::a_tube_leaks_only_with_exactly_one_connection' panicked at src/tubes.rs:256:5:
+not yet implemented: the tube leak predicate
+thread 'tubes::tests::a_single_connection_shows_its_opposite_side' panicked at src/tubes.rs:262:5:
+not yet implemented: the tube's displayed connections
+...
+test result: FAILED. 26 passed; 7 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+7 failed, and one of them was a real error in the first implementation (advanced tube
+`danger_pressure` returned 25 instead of 20: `left: 25.0 right: 20.0`). A second expectation was
+wrong in the test, not the code — `only_lower_pressure_neighbours_take_part` expected 1,000 to an
+empty neighbour where upstream's own total gives 500; the test was corrected against
+`MachineAirHandler.disperseAir`. Then `tubes-green.log`: **36 passed, 0 failed**.
+
+Failure capability re-proved by mutation (`tubes-mutation.log`): `VOLUME_ADVANCED_PRESSURE_TUBE`
+4,000 → 5,000 and `tube_leaks`'s `closed.is_empty() &&` → `||` gave
+`test result: FAILED. 30 passed; 3 failed` (`the_three_tubes_have_upstreams_volumes_and_tiers`,
+`the_harness_setter_stops_at_the_tubes_critical_pressure`,
+`a_tube_leaks_only_with_exactly_one_connection`); both were restored.
+
+### Verified in game (0.2.1, pin `0a875da`)
+
+`ports/_shared/evidence/pneumaticcraft-e2e/` — `e2e-launcher.log` (PASS + `EXIT:0`),
+`e2e-control.log` (the same assertions on the unmodified Nightly: `FAIL: the control game does not
+know pneumaticcraft:pressure_tube (as expected)` + `EXIT:1`), `e2e-selftest.log` (`FAIL: selftest:
+the ring kept all 4000 mL (as expected)` + `EXIT:1`), and `check-e2e-logs.py pneumaticcraft-e2e
+--strict` → `logs=3 ok=3`.
+
+| Phase | What the log shows |
+|---|---|
+| A | slice 1 unchanged: 139 ticks, air +2,216 mL, FE −5,560 (16 mL and 40 FE a tick) |
+| B | a compressor → two advanced tubes → dynamo line at 25 bar: `links=2` on both tubes, tubes 99,336→97,236 and 99,016→96,868 mL, dynamo FE 3,648→9,490, compressor FE 98,320→91,440 in 172 ticks, network 24.90→24.14 bar |
+| C | the six booleans: `west=true east=true north=false south=false up=false` on both tubes of the line, and a tube hung off one compressor shows `west=true east=true` (the opposite-side rule) with `north=false` |
+| D | a closed 2×2 ring of basic tubes: 4,000 mL splits to 1,000/1,000/1,000/1,000 and the total stays 4,000 (the differential against E) |
+| E | a dead-end tube (`links=1`) holds 16 mL after 221 ticks while the run's tube held 99,336: it vents what it is sent |
+| F | tiers and clamps: 1,000 mL at 7.000 bar, 1,000 mL at 12.000 bar, 4,000 mL at 25.000 bar, and each alone (`links=0`) keeps what it was given |
+| G | all three tube items are in the inventory |
+| H | a block that is not a PneumaticCraft machine answers "not a …" |
+
+Package: `pneumaticcraft.hmod` 227,900 B, SHA-256 `5daf7601…3fbd`, 61 entries, no `Cargo.lock`;
+two builds with `rm -f Cargo.lock` each are `cmp`-identical; `check` exit 0; `fits --build 0a875da`
+→ `0a875da  made for`, `fits --build 0b14f8a` → `0b14f8a  fits`; `verify-sdk-package.py
+pneumaticcraft` → 1/1.
+
+### Coverage (every family this package ships)
+
+| Family | Where | State |
+|---|---|---|
+| flux compressor (FE→air, heat, `active`, leak) | slice 1 | `tested` — e2e A, and the slice-1 runs |
+| pneumatic dynamo (air→FE, 15-bar gate, coil-face push) | slice 1 | `tested` — e2e B (its FE comes from air that crossed both tubes) |
+| `pressure_tube` block + item, state, shape, loot | slice 2 | `tested` — e2e D/E/F, G |
+| `reinforced_pressure_tube` | slice 2 | `tested` — e2e F (volume 1,000, 12.000 bar) |
+| `advanced_pressure_tube` | slice 2 | `tested` — e2e B/F (volume 4,000, 25.000 bar) |
+| six-sided connection state | slice 2 | `tested` — e2e C |
+| network dispersion by volume, no backflow | slice 2 | `tested` — e2e B, D |
+| dead-end leak, run conservation | slice 2 | `tested` — e2e D (ring keeps 4,000) and E (16 mL) |
+| `/pneumaticcraft info|air|energy` | slice 1+2 | `tested` — every phase parses `info`; `air` in B/D/F; `energy` in A/B/E |
+| tubes' recipes | — | `not ported` (need `compressed_iron_ingot`/`c_glass_blocks`, and the item chain is a later slice: an unknown **item** ingredient fails the content check) |
+| wrench (`sidesClosed`), modules, camouflage, waterlogging, `tube_junction` | — | `not ported` — gaps (see the list above) |
+| upgrades, menus, overpressure explosion, the other machines | — | `not ported` — gaps |
+
+`## Upstream defects fixed`: none found in this slice. The two failures the TDD run caught were
+this port's own (a wrong tier constant, a wrong test expectation), not upstream's; nothing in the
+tube's code contradicts the jar's data. One thing worth knowing rather than fixing: upstream's
+`getLeakDir` vents a dead-end tube from the side **opposite** its only connection, which is what
+this port does too (the leak amount does not depend on the direction).
+
+Skills: superpowers/using-superpowers, brainstorming, writing-plans, test-driven-development, systematic-debugging, verification-before-completion; BeautifulRust/rust-best-practices, rust-review
+
+## Gaps (the rest of the mod; slice 3+)
+
+- **Pressure tubes' remaining half** — the pneumatic wrench (`sidesClosed`), tube modules
+  (pressure gauge, safety valve, regulator, gauges, thermometers…), camouflage, waterlogging, and
+  `tube_junction` (one block entity with two independent crossing channels; not in slice 2).
 - **Upgrades** (speed/volume/security/dispenser) and their items.
 - **Menus/screens**, the pressure gauge/manometer item, the GUI redstone modes.
 - **Overpressure explosion** (`doOverpressureChecks`) — not ported; nothing in the slice reaches
